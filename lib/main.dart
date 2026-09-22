@@ -320,12 +320,22 @@ class _WebViewScreenState extends State<WebViewScreen>
     _controller = WebViewController()
       ..setJavaScriptMode(JavaScriptMode.unrestricted)
       ..setBackgroundColor(Colors.white)
-      ..enableZoom(false)
-      ..setUserAgent(
-        'Mozilla/5.0 (Linux; Android 15; SM-S906B) '
-        'AppleWebKit/537.36 (KHTML, like Gecko) '
-        'Chrome/120.0.0.0 Mobile Safari/537.36',
-      )
+      ..enableZoom(false);
+      //..setUserAgent(
+      //  'Mozilla/5.0 (Linux; Android 15; SM-S906B) '
+      //  'AppleWebKit/537.36 (KHTML, like Gecko) '
+      //  'Chrome/120.0.0.0 Mobile Safari/537.36',
+      //)
+
+      if (Platform.isAndroid) {
+        _controller.setUserAgent(
+          'Mozilla/5.0 (Linux; Android 15; SM-S906B) '
+          'AppleWebKit/537.36 (KHTML, like Gecko) '
+          'Chrome/120.0.0.0 Mobile Safari/537.36',
+        );
+      }
+
+      _controller
       ..addJavaScriptChannel(
         'FlutterBridge',
         onMessageReceived: (JavaScriptMessage message) {
@@ -345,6 +355,10 @@ class _WebViewScreenState extends State<WebViewScreen>
             if (mounted) setState(() => _isLoading = false);
 
             await _disableWebViewZoom();
+
+            if (Platform.isIOS) {
+                await _fixIOSLayout();
+              }
 
             await _controller.runJavaScript('''
               window.addEventListener('scroll', function() {
@@ -419,138 +433,617 @@ class _WebViewScreenState extends State<WebViewScreen>
       ..loadRequest(Uri.parse(_baseUrl));
   }
 
-  Future<void> _disableWebViewZoom() async {
-    try {
-      await _controller.runJavaScript(r'''
-        (function () {
-          const viewportContent =
-              'width=device-width, initial-scale=1.0, minimum-scale=1.0, ' +
-              'maximum-scale=1.0, user-scalable=no, viewport-fit=cover';
+  // Future<void> _disableWebViewZoom() async {
+  //   try {
+  //     await _controller.runJavaScript(r'''
+  //       (function () {
+  //         const viewportContent =
+  //             'width=device-width, initial-scale=1.0, minimum-scale=1.0, ' +
+  //             'maximum-scale=1.0, user-scalable=no, viewport-fit=cover';
 
-          function lockViewport() {
-            let viewport = document.querySelector('meta[name="viewport"]');
+  //         function lockViewport() {
+  //           let viewport = document.querySelector('meta[name="viewport"]');
 
-            if (!viewport) {
-              viewport = document.createElement('meta');
-              viewport.name = 'viewport';
-              document.head.appendChild(viewport);
-            }
+  //           if (!viewport) {
+  //             viewport = document.createElement('meta');
+  //             viewport.name = 'viewport';
+  //             document.head.appendChild(viewport);
+  //           }
 
-            if (viewport.getAttribute('content') !== viewportContent) {
-              viewport.setAttribute('content', viewportContent);
-            }
-          }
+  //           if (viewport.getAttribute('content') !== viewportContent) {
+  //             viewport.setAttribute('content', viewportContent);
+  //           }
+  //         }
 
-          lockViewport();
+  //         lockViewport();
 
-          if (document.head && !window.__flutterZoomObserverInstalled) {
-            window.__flutterZoomObserverInstalled = true;
+  //         if (document.head && !window.__flutterZoomObserverInstalled) {
+  //           window.__flutterZoomObserverInstalled = true;
 
-            new MutationObserver(function () {
-              lockViewport();
-            }).observe(document.head, {
-              childList: true,
-              subtree: true,
-              attributes: true,
-              attributeFilter: ['content']
-            });
-          }
+  //           new MutationObserver(function () {
+  //             lockViewport();
+  //           }).observe(document.head, {
+  //             childList: true,
+  //             subtree: true,
+  //             attributes: true,
+  //             attributeFilter: ['content']
+  //           });
+  //         }
 
-          if (!window.__flutterZoomEventsInstalled) {
-            window.__flutterZoomEventsInstalled = true;
+  //         if (!window.__flutterZoomEventsInstalled) {
+  //           window.__flutterZoomEventsInstalled = true;
 
-            document.addEventListener('touchmove', function (event) {
-              if (event.touches && event.touches.length > 1) {
-                event.preventDefault();
-              }
-            }, { passive: false });
+  //           document.addEventListener('touchmove', function (event) {
+  //             if (event.touches && event.touches.length > 1) {
+  //               event.preventDefault();
+  //             }
+  //           }, { passive: false });
 
-            let lastTouchEnd = 0;
-            document.addEventListener('touchend', function (event) {
-              const now = Date.now();
+  //           let lastTouchEnd = 0;
+  //           document.addEventListener('touchend', function (event) {
+  //             const now = Date.now();
 
-              if (now - lastTouchEnd <= 300) {
-                event.preventDefault();
-              }
+  //             if (now - lastTouchEnd <= 300) {
+  //               event.preventDefault();
+  //             }
 
-              lastTouchEnd = now;
-            }, { passive: false });
+  //             lastTouchEnd = now;
+  //           }, { passive: false });
 
-            ['gesturestart', 'gesturechange', 'gestureend'].forEach(
-              function (eventName) {
-                document.addEventListener(eventName, function (event) {
-                  event.preventDefault();
-                }, { passive: false });
-              }
-            );
-          }
+  //           ['gesturestart', 'gesturechange', 'gestureend'].forEach(
+  //             function (eventName) {
+  //               document.addEventListener(eventName, function (event) {
+  //                 event.preventDefault();
+  //               }, { passive: false });
+  //             }
+  //           );
+  //         }
 
-          if (!document.getElementById('flutter-disable-zoom-style')) {
-            const style = document.createElement('style');
-            style.id = 'flutter-disable-zoom-style';
-            style.textContent = `
-              html, body {
-                touch-action: pan-x pan-y !important;
-              }
+  //         if (!document.getElementById('flutter-disable-zoom-style')) {
+  //           const style = document.createElement('style');
+  //           style.id = 'flutter-disable-zoom-style';
+  //           style.textContent = `
+  //             html, body {
+  //               touch-action: pan-x pan-y !important;
+  //             }
 
-              input, textarea, select {
-                font-size: 16px !important;
-              }
-            `;
-            document.head.appendChild(style);
-          }
-        })();
-      ''');
-    } catch (e) {
-      debugPrint('Disable zoom injection error: $e');
-    }
-  }
+  //             input, textarea, select {
+  //               font-size: 16px !important;
+  //             }
+  //           `;
+  //           document.head.appendChild(style);
+  //         }
+  //       })();
+  //     ''');
+  //   } catch (e) {
+  //     debugPrint('Disable zoom injection error: $e');
+  //   }
+  // }
 
-  void _injectCallBridge() {
-    _controller.runJavaScript(r'''
-      (function() {
+Future<void> _disableWebViewZoom() async {
+  try {
+    await _controller.runJavaScript(r'''
+      (function () {
 
-        function sendToDialer(phone) {
-          var clean = phone.replace(/[^\d+]/g, '');
-          if (clean.length < 5) return;
-          FlutterBridge.postMessage(JSON.stringify({ action: 'openDialer', phone: clean }));
+        var viewport =
+          document.querySelector('meta[name="viewport"]');
+
+        if (!viewport) {
+          viewport = document.createElement('meta');
+          viewport.name = 'viewport';
+          document.head.appendChild(viewport);
         }
 
-        function sendToWhatsApp(url) {
-          FlutterBridge.postMessage(JSON.stringify({ action: 'openWhatsApp', url: url }));
+        viewport.setAttribute(
+          'content',
+          'width=device-width, initial-scale=1.0, ' +
+          'minimum-scale=1.0, maximum-scale=1.0, ' +
+          'user-scalable=no, viewport-fit=cover'
+        );
+
+        var oldStyle =
+          document.getElementById('flutter-disable-zoom-style');
+
+        if (oldStyle) {
+          oldStyle.remove();
         }
 
-        var _originalOpen = window.open;
-        window.open = function(url, target, features) {
-          if (url && typeof url === 'string') {
-            if (url.startsWith('tel:')) {
-              sendToDialer(url.replace('tel:', ''));
-              return null;
-            }
-            if (url.indexOf('wa.me') !== -1 || url.indexOf('whatsapp') !== -1) {
-              sendToWhatsApp(url);
-              return null;
-            }
-            if (target === '_blank') {
-              FlutterBridge.postMessage(JSON.stringify({ action: 'openExternal', url: url }));
-              return null;
-            }
-          }
-          return _originalOpen.apply(window, arguments);
-        };
+        var style = document.createElement('style');
 
-        document.addEventListener('click', function(e) {
-          var target = e.target.closest('a[href^="tel:"]');
-          if (target) {
-            e.preventDefault();
-            sendToDialer(target.href.replace('tel:', ''));
-          }
-        }, true);
+        style.id = 'flutter-disable-zoom-style';
 
-        console.log('FlutterBridge injected');
+        style.textContent = `
+          input,
+          textarea,
+          select {
+            font-size: 16px !important;
+          }
+        `;
+
+        document.head.appendChild(style);
+
       })();
     ''');
+  } catch (e) {
+    debugPrint('Disable zoom injection error: $e');
   }
+}
+
+//   Future<void> _fixIOSLayout() async {
+//   if (!Platform.isIOS) return;
+
+//   try {
+//     await _controller.runJavaScript(r'''
+//       (function () {
+//         var viewport = document.querySelector('meta[name="viewport"]');
+
+//         if (!viewport) {
+//           viewport = document.createElement('meta');
+//           viewport.name = 'viewport';
+//           document.head.appendChild(viewport);
+//         }
+
+//         viewport.setAttribute(
+//           'content',
+//           'width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover'
+//         );
+
+//         if (!document.getElementById('flutter-ios-layout-fix')) {
+//           var style = document.createElement('style');
+//           style.id = 'flutter-ios-layout-fix';
+
+//           style.innerHTML = `
+//             html, body {
+//               width: 100% !important;
+//               min-width: 100% !important;
+//               max-width: 100% !important;
+//               margin: 0 !important;
+//               overflow-x: hidden !important;
+//             }
+//           `;
+
+//           document.head.appendChild(style);
+//         }
+//       })();
+//     ''');
+//   } catch (e) {
+//     debugPrint('iOS layout fix error: $e');
+//   }
+// }
+
+//   void _injectCallBridge() {
+//     _controller.runJavaScript(r'''
+//       (function() {
+
+//         function sendToDialer(phone) {
+//           var clean = phone.replace(/[^\d+]/g, '');
+//           if (clean.length < 5) return;
+//           FlutterBridge.postMessage(JSON.stringify({ action: 'openDialer', phone: clean }));
+//         }
+
+//         function sendToWhatsApp(url) {
+//           FlutterBridge.postMessage(JSON.stringify({ action: 'openWhatsApp', url: url }));
+//         }
+
+//         var _originalOpen = window.open;
+//         window.open = function(url, target, features) {
+//           if (url && typeof url === 'string') {
+//             if (url.startsWith('tel:')) {
+//               sendToDialer(url.replace('tel:', ''));
+//               return null;
+//             }
+//             if (url.indexOf('wa.me') !== -1 || url.indexOf('whatsapp') !== -1) {
+//               sendToWhatsApp(url);
+//               return null;
+//             }
+//             if (target === '_blank') {
+//               FlutterBridge.postMessage(JSON.stringify({ action: 'openExternal', url: url }));
+//               return null;
+//             }
+//           }
+//           return _originalOpen.apply(window, arguments);
+//         };
+
+//         document.addEventListener('click', function(e) {
+//           var target = e.target.closest('a[href^="tel:"]');
+//           if (target) {
+//             e.preventDefault();
+//             sendToDialer(target.href.replace('tel:', ''));
+//           }
+//         }, true);
+
+//         console.log('FlutterBridge injected');
+//       })();
+//     ''');
+//   }
+
+
+Future<void> _fixIOSLayout() async {
+  if (!Platform.isIOS) return;
+
+  try {
+    await _controller.runJavaScript(r'''
+      (function () {
+
+        // Install only once
+        if (window.__sailooIOSLayoutFixInstalled) {
+          if (window.__sailooFixLayout) {
+            window.__sailooFixLayout();
+          }
+          return;
+        }
+
+        window.__sailooIOSLayoutFixInstalled = true;
+
+        // --------------------------------------------------------
+        // Base CSS
+        // --------------------------------------------------------
+
+        var oldStyle =
+          document.getElementById('sailoo-ios-layout-fix');
+
+        if (oldStyle) {
+          oldStyle.remove();
+        }
+
+        var style = document.createElement('style');
+        style.id = 'sailoo-ios-layout-fix';
+
+        style.textContent = `
+
+          html,
+          body {
+            width: 100% !important;
+            max-width: 100vw !important;
+            min-width: 0 !important;
+
+            margin-left: 0 !important;
+            margin-right: 0 !important;
+
+            overflow-x: hidden !important;
+          }
+
+          *,
+          *::before,
+          *::after {
+            box-sizing: border-box !important;
+          }
+
+          img,
+          svg,
+          canvas {
+            max-width: 100% !important;
+          }
+
+          input,
+          textarea,
+          select,
+          button {
+            box-sizing: border-box !important;
+            max-width: 100% !important;
+          }
+
+        `;
+
+        document.head.appendChild(style);
+
+
+        // --------------------------------------------------------
+        // Elements we must NEVER modify
+        // --------------------------------------------------------
+
+        function isProtected(el) {
+
+          if (!el || !el.closest) {
+            return false;
+          }
+
+          return !!el.closest(
+            'header, footer, nav, ' +
+            '.navbar, ' +
+            '.dropdown-menu, ' +
+            '.dropdown, ' +
+            '[role="menu"], ' +
+            '[role="listbox"], ' +
+            '[role="dialog"], ' +
+            '.modal, ' +
+            '.select2-container'
+          );
+        }
+
+
+        // --------------------------------------------------------
+        // Main layout correction
+        // --------------------------------------------------------
+
+        function fixLayout() {
+
+          var viewportWidth =
+            document.documentElement.clientWidth;
+
+          if (!viewportWidth) return;
+
+
+          // ======================================================
+          // 1. Fix elements going outside viewport
+          // ======================================================
+
+          document.querySelectorAll('body *').forEach(function(el) {
+
+            if (isProtected(el)) return;
+
+            var style =
+              window.getComputedStyle(el);
+
+            if (
+              style.position === 'fixed' ||
+              style.position === 'sticky'
+            ) {
+              return;
+            }
+
+            var rect =
+              el.getBoundingClientRect();
+
+            if (!rect.width) return;
+
+
+            // Element crossing right edge
+            if (
+              rect.left >= 0 &&
+              rect.right > viewportWidth + 2
+            ) {
+
+              var available =
+                viewportWidth - rect.left;
+
+              if (available > 80) {
+
+                el.style.setProperty(
+                  'max-width',
+                  available + 'px',
+                  'important'
+                );
+
+                /*
+                 * Controls with width:100% + padding/border
+                 * are causing dashboard filter overflow.
+                 */
+                if (
+                  el.tagName === 'BUTTON' ||
+                  el.tagName === 'INPUT' ||
+                  el.tagName === 'SELECT' ||
+                  el.classList.contains('form-control') ||
+                  el.classList.contains('btn')
+                ) {
+
+                  el.style.setProperty(
+                    'width',
+                    available + 'px',
+                    'important'
+                  );
+                }
+              }
+            }
+
+          });
+
+
+          // ======================================================
+          // 2. Fix overflowing FLEX rows
+          //    Important for Contacted cards
+          // ======================================================
+
+          document.querySelectorAll('body *').forEach(function(el) {
+
+            if (isProtected(el)) return;
+
+            var cs =
+              window.getComputedStyle(el);
+
+            if (
+              cs.display !== 'flex' &&
+              cs.display !== 'inline-flex'
+            ) {
+              return;
+            }
+
+            /*
+             * Only touch a flex container if its content
+             * is actually wider than the container.
+             */
+            if (
+              el.scrollWidth >
+              el.clientWidth + 4
+            ) {
+
+              el.style.setProperty(
+                'flex-wrap',
+                'wrap',
+                'important'
+              );
+
+              Array.from(el.children).forEach(function(child) {
+
+                child.style.setProperty(
+                  'min-width',
+                  '0',
+                  'important'
+                );
+
+                child.style.setProperty(
+                  'max-width',
+                  '100%',
+                  'important'
+                );
+
+              });
+
+            }
+
+          });
+
+
+          // ======================================================
+          // 3. Text that is still overflowing
+          // ======================================================
+
+          document.querySelectorAll(
+            'p, span, label, small, strong, h1, h2, h3, h4, h5, h6'
+          ).forEach(function(el) {
+
+            if (isProtected(el)) return;
+
+            if (
+              el.scrollWidth >
+              el.clientWidth + 4
+            ) {
+
+              el.style.setProperty(
+                'white-space',
+                'normal',
+                'important'
+              );
+
+              el.style.setProperty(
+                'overflow-wrap',
+                'anywhere',
+                'important'
+              );
+
+              el.style.setProperty(
+                'word-break',
+                'normal',
+                'important'
+              );
+            }
+
+          });
+
+        }
+
+
+        window.__sailooFixLayout = fixLayout;
+
+
+        // First render
+        fixLayout();
+
+
+        // Some CRM widgets calculate width after rendering
+        setTimeout(fixLayout, 100);
+        setTimeout(fixLayout, 300);
+        setTimeout(fixLayout, 700);
+        setTimeout(fixLayout, 1500);
+
+
+        // --------------------------------------------------------
+        // AJAX / dynamic page content
+        // --------------------------------------------------------
+
+        var timer = null;
+
+        var observer =
+          new MutationObserver(function() {
+
+            clearTimeout(timer);
+
+            timer = setTimeout(function() {
+              fixLayout();
+            }, 100);
+
+          });
+
+        observer.observe(document.body, {
+          childList: true,
+          subtree: true
+        });
+
+
+        // --------------------------------------------------------
+        // Recalculate responsive JS components
+        // --------------------------------------------------------
+
+        try {
+          window.dispatchEvent(
+            new Event('resize')
+          );
+
+          setTimeout(function() {
+            window.dispatchEvent(
+              new Event('resize')
+            );
+          }, 300);
+
+        } catch (e) {}
+
+      })();
+    ''');
+
+  } catch (e) {
+    debugPrint('iOS layout fix error: $e');
+  }
+}
+void _injectCallBridge() {
+  _controller.runJavaScript(r'''
+    (function() {
+
+      function sendToDialer(phone) {
+        var clean = phone.replace(/[^\d+]/g, '');
+        if (clean.length < 5) return;
+
+        FlutterBridge.postMessage(JSON.stringify({
+          action: 'openDialer',
+          phone: clean
+        }));
+      }
+
+      function sendToWhatsApp(url) {
+        FlutterBridge.postMessage(JSON.stringify({
+          action: 'openWhatsApp',
+          url: url
+        }));
+      }
+
+      var _originalOpen = window.open;
+
+      window.open = function(url, target, features) {
+
+        if (url && typeof url === 'string') {
+
+          if (url.startsWith('tel:')) {
+            sendToDialer(url.replace('tel:', ''));
+            return null;
+          }
+
+          if (
+            url.indexOf('wa.me') !== -1 ||
+            url.indexOf('whatsapp') !== -1
+          ) {
+            sendToWhatsApp(url);
+            return null;
+          }
+        }
+
+        return _originalOpen.apply(window, arguments);
+      };
+
+      document.addEventListener('click', function(e) {
+
+        var target = e.target.closest('a[href^="tel:"]');
+
+        if (target) {
+          e.preventDefault();
+          sendToDialer(target.href.replace('tel:', ''));
+        }
+
+      }, true);
+
+      console.log('FlutterBridge injected');
+
+    })();
+  ''');
+}
 
   Future<void> _registerDeviceForPush() async {
     if (Firebase.apps.isEmpty) return;
@@ -659,18 +1152,64 @@ class _WebViewScreenState extends State<WebViewScreen>
     );
   }
 
-  Future<void> _makeCall(String phone) async {
+  // Future<void> _makeCall(String phone) async {
+  //   try {
+  //     await _callChannel.invokeMethod('makeCall', {'phone': phone});
+  //   } on PlatformException catch (e) {
+  //     debugPrint('Call error: ${e.message}');
+  //     final uri = Uri.parse('tel:$phone');
+  //     if (await canLaunchUrl(uri)) {
+  //       await launchUrl(uri, mode: LaunchMode.externalApplication);
+  //     }
+  //   }
+  // }
+Future<void> _makeCall(String phone) async {
+  final clean = phone.replaceAll(RegExp(r'[^\d+]'), '');
+
+  if (clean.isEmpty) return;
+
+  // iOS: MethodChannel use nahi karna
+  if (Platform.isIOS) {
     try {
-      await _callChannel.invokeMethod('makeCall', {'phone': phone});
-    } on PlatformException catch (e) {
-      debugPrint('Call error: ${e.message}');
-      final uri = Uri.parse('tel:$phone');
-      if (await canLaunchUrl(uri)) {
-        await launchUrl(uri, mode: LaunchMode.externalApplication);
-      }
+      final uri = Uri.parse('tel:$clean');
+
+      await launchUrl(
+        uri,
+        mode: LaunchMode.externalApplication,
+      );
+    } catch (e) {
+      debugPrint('iOS dialer error: $e');
     }
+
+    return;
   }
 
+  // Android existing native call
+  try {
+    await _callChannel.invokeMethod(
+      'makeCall',
+      {'phone': clean},
+    );
+  } on MissingPluginException catch (e) {
+    debugPrint('Call plugin missing: $e');
+
+    final uri = Uri.parse('tel:$clean');
+
+    await launchUrl(
+      uri,
+      mode: LaunchMode.externalApplication,
+    );
+  } on PlatformException catch (e) {
+    debugPrint('Call error: ${e.message}');
+
+    final uri = Uri.parse('tel:$clean');
+
+    await launchUrl(
+      uri,
+      mode: LaunchMode.externalApplication,
+    );
+  }
+}
   Future<void> _onRefresh() async {
     await _controller.reload();
     await Future.delayed(const Duration(milliseconds: 800));
