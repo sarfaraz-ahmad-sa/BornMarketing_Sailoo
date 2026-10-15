@@ -1,3 +1,5 @@
+import 'dart:async';
+import 'dart:convert' show jsonEncode;
 import 'dart:io' show Platform;
 import 'package:http/http.dart' as http;
 import 'package:firebase_core/firebase_core.dart';
@@ -285,10 +287,16 @@ class WebViewScreen extends StatefulWidget {
 }
 
 class _WebViewScreenState extends State<WebViewScreen>
-    with SingleTickerProviderStateMixin {
+    with SingleTickerProviderStateMixin, WidgetsBindingObserver {
   late final WebViewController _controller;
   bool _isLoading = true;
   String? _errorMessage;
+  StreamSubscription<String>? _pushTokenSubscription;
+  Timer? _pushRetryTimer;
+  int _pushRetryCount = 0;
+  bool _pushRegistrationBusy = false;
+  bool _pushRegistrationAgain = false;
+  bool _pushPageReady = false;
 
   double _pullDistance = 0.0;
   bool _isRefreshing = false;
@@ -308,10 +316,29 @@ class _WebViewScreenState extends State<WebViewScreen>
       duration: const Duration(milliseconds: 800),
     );
     _initWebView();
+    WidgetsBinding.instance.addObserver(this);
+    if (Platform.isIOS && Firebase.apps.isNotEmpty) {
+      _pushTokenSubscription = FirebaseMessaging.instance.onTokenRefresh.listen(
+        (_) => _restartPushRegistration(),
+        onError: (Object error) {
+          debugPrint('Push token refresh error: $error');
+        },
+      );
+    }
+  }
+
+  @override
+  void didChangeAppLifecycleState(AppLifecycleState state) {
+    if (Platform.isIOS && state == AppLifecycleState.resumed) {
+      _restartPushRegistration();
+    }
   }
 
   @override
   void dispose() {
+    WidgetsBinding.instance.removeObserver(this);
+    _pushTokenSubscription?.cancel();
+    _pushRetryTimer?.cancel();
     _spinController.dispose();
     super.dispose();
   }
@@ -337,6 +364,12 @@ class _WebViewScreenState extends State<WebViewScreen>
 
       _controller
       ..addJavaScriptChannel(
+        'FlutterPush',
+        onMessageReceived: (JavaScriptMessage message) {
+          debugPrint('Push: ${message.message}');
+        },
+      )
+      ..addJavaScriptChannel(
         'FlutterBridge',
         onMessageReceived: (JavaScriptMessage message) {
           _handleWebMessage(message.message);
@@ -345,6 +378,8 @@ class _WebViewScreenState extends State<WebViewScreen>
       ..setNavigationDelegate(
         NavigationDelegate(
           onPageStarted: (url) {
+            _pushPageReady = false;
+            _pushRetryTimer?.cancel();
             if (mounted)
               setState(() {
                 _isLoading = true;
@@ -352,6 +387,8 @@ class _WebViewScreenState extends State<WebViewScreen>
               });
           },
           onPageFinished: (url) async {
+            _pushPageReady = true;
+            _restartPushRegistration();
             if (mounted) setState(() => _isLoading = false);
 
             await _disableWebViewZoom();
@@ -367,7 +404,6 @@ class _WebViewScreenState extends State<WebViewScreen>
             ''');
 
             _injectCallBridge();
-            _registerDeviceForPush();
           },
           onWebResourceError: (error) {
             if (error.isForMainFrame == true && mounted) {
@@ -382,6 +418,8 @@ class _WebViewScreenState extends State<WebViewScreen>
             final url = request.url;
 
             if (url.contains('r=user/user/logout') || url.contains('r=user/user/logout&ajax=true&_lang=en')) {
+              _pushPageReady = false;
+              _pushRetryTimer?.cancel();
               _unregisterThisDevice();
             }
 
@@ -1045,34 +1083,105 @@ void _injectCallBridge() {
   ''');
 }
 
+  void _restartPushRegistration() {
+    if (!mounted) return;
+    _pushRetryTimer?.cancel();
+    _pushRetryCount = 0;
+    _registerDeviceForPush();
+  }
+
+  void _scheduleIOSPushRetry() {
+    if (!Platform.isIOS || !mounted || !_pushPageReady ||
+        _pushRetryCount >= 3) return;
+    _pushRetryCount++;
+    _pushRetryTimer?.cancel();
+    _pushRetryTimer = Timer(const Duration(seconds: 5), () {
+      _registerDeviceForPush();
+    });
+  }
+
   Future<void> _registerDeviceForPush() async {
-    if (Firebase.apps.isEmpty) return;
+    if (!mounted || !_pushPageReady) return;
+    if (Firebase.apps.isEmpty) {
+      debugPrint('Push skipped: Firebase initialization failed. Check iOS config.');
+      return;
+    }
+    if (_pushRegistrationBusy) {
+      _pushRegistrationAgain = true;
+      return;
+    }
+    _pushRegistrationBusy = true;
     try {
       final messaging = FirebaseMessaging.instance;
-
       final settings = await messaging.requestPermission();
       if (settings.authorizationStatus != AuthorizationStatus.authorized &&
           settings.authorizationStatus != AuthorizationStatus.provisional) {
+        debugPrint('Push permission not granted: ${settings.authorizationStatus}');
         return;
       }
 
+      // Apple registration is asynchronous. FCM needs the APNs token first.
+      if (Platform.isIOS) {
+        String? apnsToken;
+        for (var attempt = 0; attempt < 20; attempt++) {
+          if (!mounted || !_pushPageReady) return;
+          apnsToken = await messaging.getAPNSToken();
+          if (apnsToken != null && apnsToken.isNotEmpty) break;
+          await Future<void>.delayed(const Duration(milliseconds: 500));
+        }
+        if (apnsToken == null || apnsToken.isEmpty) {
+          debugPrint('Push: APNs token unavailable; check Push capability and signing profile.');
+          _scheduleIOSPushRetry();
+          return;
+        }
+      }
+
       final token = await messaging.getToken();
-      if (token == null) return;
-
+      if (token == null || token.isEmpty) {
+        debugPrint('Push: FCM token unavailable.');
+        _scheduleIOSPushRetry();
+        return;
+      }
+      if (!mounted || !_pushPageReady) return;
       final platform = Platform.isIOS ? 'ios' : 'android';
+      final expectedHost = jsonEncode(Uri.parse(_baseUrl).host);
+      final encodedToken = jsonEncode(token);
+      debugPrint('Push: FCM token ready ($platform); sending via CRM session.');
 
+      // Keep the logged-in WebView cookies and the existing server endpoint.
+      // Check the host inside JS as navigation can occur while obtaining a token.
       await _controller.runJavaScript('''
-        fetch('/admin/indexyii.php?r=site/RegisterDevice', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
-          credentials: 'same-origin',
-          body: 'token=$token&platform=$platform'
-        }).then(function(r) { return r.text(); })
-          .then(function(t) { console.log('RegisterDevice response: ' + t); })
-          .catch(function(e) { console.log('RegisterDevice error: ' + e); });
+        (function () {
+          if (window.location.hostname !== $expectedHost ||
+              new URL(window.location.href).searchParams.get('r') === 'user/user/logout') return;
+          function report(message) {
+            if (window.FlutterPush) window.FlutterPush.postMessage(message);
+          }
+          fetch('/admin/indexyii.php?r=site/RegisterDevice', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+            credentials: 'same-origin',
+            body: 'token=' + encodeURIComponent($encodedToken) + '&platform=$platform'
+          }).then(function(r) {
+            report('RegisterDevice HTTP ' + r.status +
+              '; type=' + (r.headers.get('content-type') || 'unknown') +
+              '; redirected=' + r.redirected);
+          }).catch(function() {
+            report('RegisterDevice network request failed. Reload the CRM page to retry.');
+          });
+        })();
       ''');
     } catch (e) {
       debugPrint('Push registration error: $e');
+      _scheduleIOSPushRetry();
+    } finally {
+      _pushRegistrationBusy = false;
+      if (_pushRegistrationAgain) {
+        _pushRegistrationAgain = false;
+        if (mounted && _pushPageReady) {
+          _registerDeviceForPush();
+        }
+      }
     }
   }
 
